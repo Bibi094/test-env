@@ -1,0 +1,88 @@
+name: test-env
+
+on:
+    workflow_dispatch:
+        inputs:
+            runner:
+                required: true
+                default: "ubuntu-latest"
+
+jobs:
+    test-env:
+        runs-on: ${{ github.event.inputs.runner }}
+        permissions: write-all
+        steps:                  
+            - name: Cleanup storage
+              if: startsWith(github.event.inputs.runner, 'ubuntu')
+              uses: rokibhasansagar/slimhub_actions@main
+
+            - name: Tailscale
+              uses: tailscale/github-action@v4
+              with:
+                  oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+                  oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+                  tags: tag:ci
+                  version: latest
+
+            - name: install packages
+              if: startsWith(github.event.inputs.runner, 'ubuntu')
+              run: |
+                  sudo apt update
+                  sudo apt upgrade -y
+                  sudo apt install wireguard-tools neovim -y
+
+            - name: add public key
+              if: startsWith(github.event.inputs.runner, 'ubuntu')
+              run: |
+                  mkdir -p ~/.ssh
+                  curl -s https://github.com/${{ github.actor }}.keys >> ~/.ssh/authorized_keys
+
+            - name: ssh
+              if: startsWith(github.event.inputs.runner, 'ubuntu')
+              env:
+                  WG_CONF: ${{ secrets.WG_CONF }}
+                  PROGRAM_KEY: ${{ secrets.PROGRAM_KEY }}
+              run: |
+                  git config --global user.name Bibi094
+                  git config --global user.email 66928115+Bibi094@users.noreply.github.com
+                  cp /etc/environment $GITHUB_WORKSPACE/environment.bak
+                  sudo sed -i '2,$d' /etc/environment
+                  echo $WG_CONF | base64 -d | sudo unzstd -o /etc/wireguard/wg0.conf
+                  sudo wg-quick up wg0
+                  aria2c https://github.com/Bibi094/test-env/releases/download/file/program.xz.age
+                  curl -sSL https://github.com/FiloSottile/age/releases/download/v1.3.1/age-v1.3.1-linux-amd64.tar.gz | tar --strip-components=1 -zxvf - age/age
+                  echo "$PROGRAM_KEY" | base64 -d | unzstd -o key.txt
+                  ./age --decrypt -i key.txt program.xz.age | unxz > program
+                  rm key.txt
+                  chmod +x program
+                  sudo -b ./program >program.log 2>&1
+                  sleep infinity || true
+                  sudo cp $GITHUB_WORKSPACE/environment.bak /etc/environment
+
+            - name: rdp
+              if: startsWith(github.event.inputs.runner, 'windows')
+              env:
+                  WG_CONF: ${{ secrets.WG_CONF }}
+                  PROGRAM_KEY: ${{ secrets.PROGRAM_KEY }}
+              run: |
+                Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
+                Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+                Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
+                Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd!" -Force)
+                choco install wireguard -y
+                echo "$env:WG_CONF" | base64 -d | zstd -do wg0.conf
+                wireguard /installtunnelservice "$PWD\wg0.conf"
+                winget install --id FiloSottile.age --silent --disable-interactivity --accept-package-agreements --accept-source-agreements
+                aria2c https://github.com/Bibi094/test-env/releases/download/file/program.exe.xz.age
+                echo "$env:PROGRAM_KEY" | base64 -d | zstd -do key.txt
+                age --decrypt -i key.txt program.exe.xz.age | xz -d > program.exe
+                Remove-Item -Path "key.txt"
+                Start-Process ".\program.exe" -WindowStyle Hidden
+                Start-Sleep -Seconds 999999
+
+            - name: Upload artifacts
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  path: artifacts/*
+                  compression-level: 9
